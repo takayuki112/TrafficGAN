@@ -1,12 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn.utils import spectral_norm
-import numpy as np # Assuming you need this later for generate_samples
-import matplotlib.pyplot as plt # Assuming you need this later for create_image_grid
-import os # Assuming you need this later
-from tqdm import tqdm # Assuming you need this later
 
-# --- Keep your Discriminator and ConditionalBatchNorm classes as they are ---
 class Discriminator(nn.Module):
     def __init__(self, n_classes=43, embedding_dim = 64):
         super().__init__()
@@ -45,21 +40,21 @@ class Discriminator(nn.Module):
                                 stride=2,
                                 padding=1,
                                 bias=False
-                        ), # 8 -> 4 == 4x4x64  # Corrected comment
+                        ), # 8 -> 4 == 4x4x64  
                     ),
-                    # nn.BatchNorm2d(num_features=64), # Corrected comment num_features
+                    # nn.BatchNorm2d(num_features=64), 
                     nn.LeakyReLU(negative_slope=0.2,
                                     inplace=True),
 
                     spectral_norm(
                         nn.Conv2d(in_channels=64,
                                 out_channels=128,
-                                kernel_size=4, # Changed kernel_size from 2 to 4 to match common DCGAN patterns
-                                stride=1,      # Changed stride from 2 to 1
-                                padding=0      # Changed padding from 1 to 0
-                        ), # 4 -> 1 == 1 x 1 x 128 # Adjusted calculation based on changes
+                                kernel_size=4, 
+                                stride=1,      
+                                padding=0     
+                        ), # 4 -> 1 == 1 x 1 x 128 
                     ),
-                    # nn.BatchNorm2d(num_features=128), # Corrected comment num_features
+                    
                     nn.LeakyReLU(negative_slope=0.2,
                                     inplace=True),
                     nn.Flatten(),
@@ -71,7 +66,7 @@ class Discriminator(nn.Module):
                     # Conv3 (k=4, s=2, p=1): B x 64 x 4 x 4
                     # Conv4 (k=4, s=1, p=0): B x 128 x 1 x 1
                     # Flatten: B x 128
-                    spectral_norm(nn.Linear(128, embedding_dim)) # Adjusted input features from 1152 to 128
+                    spectral_norm(nn.Linear(128, embedding_dim)) 
         )
 
         self.class_emb = spectral_norm(
@@ -108,8 +103,6 @@ class ConditionalBatchNorm(nn.Module):
 
         self.bn = nn.BatchNorm2d(num_features, affine=False)
 
-        # Use a separate embedding for CBN or reuse one if dimensionality matches and makes sense
-        # Using a separate one here for clarity
         self.emb = nn.Embedding(num_embeddings=n_classes, embedding_dim=embedding_dim)
 
         self.gamma_c = spectral_norm(nn.Linear(embedding_dim, num_features))
@@ -159,16 +152,14 @@ class Generator(nn.Module):
 
         self.class_emb = nn.Embedding(num_embeddings=n_classes, embedding_dim=embedding_dim)
 
-        initial_dim = 4 # Start from 4x4 instead of 2x2 for common DCGAN structure
+        initial_dim = 4 
         initial_channels = 256
 
-        # Project noise+embedding and reshape
         self.initial_fc = spectral_norm(nn.Linear(noise_dim + embedding_dim, initial_dim * initial_dim * initial_channels))
         self.initial_reshape = nn.Unflatten(dim=1, unflattened_size=(initial_channels, initial_dim, initial_dim))
-        # Added ReLU after initial projection
+       
         self.initial_relu = nn.ReLU(inplace=True)
 
-        # Upsample block 1: 4x4 -> 8x8
         self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
         self.conv1 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels,
@@ -180,7 +171,7 @@ class Generator(nn.Module):
         )
         self.relu1 = nn.ReLU(inplace=True)
 
-        # Upsample block 2: 8x8 -> 16x16
+
         self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
         self.conv2 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels // 2,
@@ -192,7 +183,7 @@ class Generator(nn.Module):
         )
         self.relu2 = nn.ReLU(inplace=True)
 
-        # Upsample block 3: 16x16 -> 32x32
+
         self.up3 = nn.Upsample(scale_factor=2, mode='nearest')
         self.conv3 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels // 4,
@@ -204,47 +195,39 @@ class Generator(nn.Module):
         )
         self.relu3 = nn.ReLU(inplace=True)
 
-        # Removed upsample4 as we are starting from 4x4 and doing 3 upsamples to get to 32x32
-        # self.upsample4 = ...
 
-        # Final layer: 32x32 -> 32x32 (adjust channels to 3)
         self.final_conv = nn.Conv2d(in_channels=initial_channels // 8, # 32
                                 out_channels=3,
                                 kernel_size=3, stride=1, padding=1, bias=False)
         self.final_act = nn.Tanh()
 
-        self._initialize_weights() # Keep your weight initialization
 
+        self._initialize_weights() 
+        
+        
     def _initialize_weights(self):
         for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)): # Added ConvTranspose2d just in case
-                 # Use a common GAN initialization like normal or orthogonal
-                 # Kaiming might also work but normal is often used in GANs
+            if isinstance(m, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)):
                 nn.init.normal_(m.weight, 0.0, 0.02)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, (nn.BatchNorm2d, ConditionalBatchNorm)):
-                 # Initialize BatchNorm parameters
                  if hasattr(m, 'weight') and m.weight is not None:
                      nn.init.normal_(m.weight, 1.0, 0.02)
                  if hasattr(m, 'bias') and m.bias is not None:
                      nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Embedding):
-                 nn.init.normal_(m.weight, 0.0, 0.02) # Initialize embeddings
+                 nn.init.normal_(m.weight, 0.0, 0.02) 
 
 
     def forward(self, z, y):
-        # Embed class label
         y_emb = self.class_emb(y)
 
-        # Concatenate noise and embedding
         z_y = torch.cat([z, y_emb], dim=1)
 
-        # Initial projection and reshape
         x = self.initial_fc(z_y)
-        x = self.initial_relu(x) # Apply activation *after* FC
+        x = self.initial_relu(x) 
         x = self.initial_reshape(x)
-
 
         # Upsample block 1
         x = self.up1(x)
