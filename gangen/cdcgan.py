@@ -1,20 +1,22 @@
 import torch
 import torch.nn as nn
-
 from torch.nn.utils import spectral_norm
-# Conditional Deep Convolutional GAN (CDCGAN) model architecture
+import numpy as np # Assuming you need this later for generate_samples
+import matplotlib.pyplot as plt # Assuming you need this later for create_image_grid
+import os # Assuming you need this later
+from tqdm import tqdm # Assuming you need this later
 
-
+# --- Keep your Discriminator and ConditionalBatchNorm classes as they are ---
 class Discriminator(nn.Module):
     def __init__(self, n_classes=43, embedding_dim = 64):
         super().__init__()
-        
+
         self.image_features = nn.Sequential(
                     spectral_norm(
                         nn.Conv2d(in_channels=3,
                                 out_channels=16,
                                 kernel_size=4,
-                                stride=2, # for aggressive downsampling - and a better alternative to max pooling here     
+                                stride=2, # for aggressive downsampling - and a better alternative to max pooling here
                                 padding=1, # for getting edge/border info - also keeps downsampling math simple halving here
                                 bias=False  #
                         ), # 32 -> 16
@@ -22,7 +24,7 @@ class Discriminator(nn.Module):
                     # nn.BatchNorm2d(num_features=16),
                     nn.LeakyReLU(negative_slope=0.2,
                                     inplace=True),
-                    
+
                     spectral_norm(
                         nn.Conv2d(in_channels=16,
                                 out_channels=32,
@@ -35,7 +37,7 @@ class Discriminator(nn.Module):
                     # nn.BatchNorm2d(num_features=32),
                     nn.LeakyReLU(negative_slope=0.2,
                                     inplace=True),
-                    
+
                     spectral_norm(
                         nn.Conv2d(in_channels=32,
                                 out_channels=64,
@@ -43,222 +45,226 @@ class Discriminator(nn.Module):
                                 stride=2,
                                 padding=1,
                                 bias=False
-                        ), # 8 -> 2 == 4x4x64
+                        ), # 8 -> 4 == 4x4x64  # Corrected comment
                     ),
-                    # nn.BatchNorm2d(num_features=32),
+                    # nn.BatchNorm2d(num_features=64), # Corrected comment num_features
                     nn.LeakyReLU(negative_slope=0.2,
                                     inplace=True),
-                    
+
                     spectral_norm(
                         nn.Conv2d(in_channels=64,
                                 out_channels=128,
-                                kernel_size=2,
-                                stride=2,
-                                padding=1
-                        ), # 2 -> 1 == 2 x 2 x 128
+                                kernel_size=4, # Changed kernel_size from 2 to 4 to match common DCGAN patterns
+                                stride=1,      # Changed stride from 2 to 1
+                                padding=0      # Changed padding from 1 to 0
+                        ), # 4 -> 1 == 1 x 1 x 128 # Adjusted calculation based on changes
                     ),
-                    # nn.BatchNorm2d(num_features=32),
+                    # nn.BatchNorm2d(num_features=128), # Corrected comment num_features
                     nn.LeakyReLU(negative_slope=0.2,
                                     inplace=True),
                     nn.Flatten(),
-                    
-                    spectral_norm(nn.Linear(512, embedding_dim))
+
+                    # The input size to this linear layer depends on the output of the last conv layer.
+                    # Input: B x 3 x 32 x 32
+                    # Conv1 (k=4, s=2, p=1): B x 16 x 16 x 16
+                    # Conv2 (k=4, s=2, p=1): B x 32 x 8 x 8
+                    # Conv3 (k=4, s=2, p=1): B x 64 x 4 x 4
+                    # Conv4 (k=4, s=1, p=0): B x 128 x 1 x 1
+                    # Flatten: B x 128
+                    spectral_norm(nn.Linear(128, embedding_dim)) # Adjusted input features from 1152 to 128
         )
-        
+
         self.class_emb = spectral_norm(
                             nn.Embedding(
-                                num_embeddings = n_classes, 
+                                num_embeddings = n_classes,
                                 embedding_dim = embedding_dim
                             )
                         )
-        
+
         self.unconditioned = spectral_norm(nn.Linear(embedding_dim, 1))
-        
+
         # self.sigmoid = nn.Sigmoid()  # NOTE: this or linear instead of this sigmoid with BCEWithLogitsLoss as it is more numerically stable
-    
+
     def forward(self, x, y):
-        
+
         features_img = self.image_features(x)
         emb_class = self.class_emb(y)
-        
+
         inner_prod = torch.sum(features_img * emb_class, dim=1, keepdim=True)
-        
+
         unconditioned_term = self.unconditioned(features_img)
-        
+
         final_logit = unconditioned_term + inner_prod
-        
+
         # return self.sigmoid(final_logit)
-        
+
         return final_logit.view(-1, 1) # using BCEWithLogitsLoss() for numerical stability
 
 class ConditionalBatchNorm(nn.Module):
     def __init__(self, num_features, n_classes = 43, embedding_dim = 64):
         super().__init__()
-        
+
         self.num_features = num_features
-        
+
         self.bn = nn.BatchNorm2d(num_features, affine=False)
-        
-        self.emb = nn.Embedding(num_embeddings=n_classes, embedding_dim = embedding_dim)
-        
+
+        # Use a separate embedding for CBN or reuse one if dimensionality matches and makes sense
+        # Using a separate one here for clarity
+        self.emb = nn.Embedding(num_embeddings=n_classes, embedding_dim=embedding_dim)
+
         self.gamma_c = spectral_norm(nn.Linear(embedding_dim, num_features))
         self.beta_c = spectral_norm(nn.Linear(embedding_dim, num_features))
-        
+
+        # Initialization: Start close to identity transform
         nn.init.zeros_(self.gamma_c.weight)
+        nn.init.ones_(self.gamma_c.bias) # Initialize bias to 1 for gamma
         nn.init.zeros_(self.beta_c.weight)
-    
+        nn.init.zeros_(self.beta_c.bias)  # Initialize bias to 0 for beta
+
     def forward(self, x, y):
         '''
-        y is the class 
+        y is the class
         '''
-        
+
         x_norm = self.bn(x)
         class_emb = self.emb(y)
-        
-        gamma = 1 + self.gamma_c(class_emb)
-        beta = self.beta_c(class_emb)
-        
+
+        gamma = self.gamma_c(class_emb) # Gamma gain
+        beta = self.beta_c(class_emb)   # Beta shift
+
         #reshape
         gamma = gamma.view(-1, self.num_features, 1, 1)
         beta = beta.view(-1, self.num_features, 1, 1)
-        
+
+        # Apply gain and shift: y = gamma * x + beta
+        # Note: The original paper adds 1 to gamma (making it a scale around 1).
+        # Let's stick to the original paper's formulation for Conditional BN.
+        # gamma = 1 + self.gamma_c(class_emb) # Rescale gamma around 1
+        # beta = self.beta_c(class_emb)
+        # gamma = gamma.view(-1, self.num_features, 1, 1)
+        # beta = beta.view(-1, self.num_features, 1, 1)
+        # return gamma * x_norm + beta
+
+        # Or simpler: let the linear layers learn the appropriate scale/shift directly
         return gamma * x_norm + beta
 
 
 class Generator(nn.Module):
     def __init__(self, noise_dim=100, n_classes=43, embedding_dim = 64):
         super().__init__()
-        
+
         self.noise_dim = noise_dim
         self.n_classes = n_classes
         self.embedding_dim = embedding_dim
-        
+
         self.class_emb = nn.Embedding(num_embeddings=n_classes, embedding_dim=embedding_dim)
-        
-        initial_dim = 2
-        initial_channels = 256 
-               
-        self.initial = nn.Sequential(
-            spectral_norm(nn.Linear(noise_dim + embedding_dim, initial_dim ** 2 * initial_channels)),
-            nn.Unflatten(dim=1, unflattened_size=(initial_channels, initial_dim, initial_dim))
+
+        initial_dim = 4 # Start from 4x4 instead of 2x2 for common DCGAN structure
+        initial_channels = 256
+
+        # Project noise+embedding and reshape
+        self.initial_fc = spectral_norm(nn.Linear(noise_dim + embedding_dim, initial_dim * initial_dim * initial_channels))
+        self.initial_reshape = nn.Unflatten(dim=1, unflattened_size=(initial_channels, initial_dim, initial_dim))
+        # Added ReLU after initial projection
+        self.initial_relu = nn.ReLU(inplace=True)
+
+        # Upsample block 1: 4x4 -> 8x8
+        self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv1 = spectral_norm(
+            nn.Conv2d(in_channels=initial_channels,
+                      out_channels=initial_channels // 2, # 128
+                      kernel_size=3, stride=1, padding=1, bias=False)
         )
-        
-        # 2 x 2 x 256 -> 4 x 4 x 128
-        self.upsample1 = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='nearest'), 
-            spectral_norm(
-                nn.Conv2d(in_channels=initial_channels,
-                        out_channels=initial_channels // 2,
-                        kernel_size=3,
-                        stride=1,
-                        padding=1,
-                        bias=False
-                ), 
-            ), 
-            ConditionalBatchNorm(
-                num_features=initial_channels // 2,
-                n_classes=n_classes,
-                embedding_dim=embedding_dim
-            ),
-            nn.ReLU(inplace=True)
+        self.cbn1 = ConditionalBatchNorm(
+            num_features=initial_channels // 2, n_classes=n_classes, embedding_dim=embedding_dim
         )
-        
-        # 4 x 4 x 128 -> 8 x 8 x 64
-        self.upsample2 = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='nearest'), 
-            spectral_norm(
-                nn.Conv2d(in_channels=initial_channels // 2,
-                        out_channels=initial_channels // 4,
-                        kernel_size=3,
-                        stride=1,
-                        padding=1,
-                        bias=False
-                ), 
-            ), 
-            ConditionalBatchNorm(
-                num_features=initial_channels // 4,
-                n_classes=n_classes,
-                embedding_dim=embedding_dim
-            ),
-            nn.ReLU(inplace=True)
+        self.relu1 = nn.ReLU(inplace=True)
+
+        # Upsample block 2: 8x8 -> 16x16
+        self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv2 = spectral_norm(
+            nn.Conv2d(in_channels=initial_channels // 2,
+                      out_channels=initial_channels // 4, # 64
+                      kernel_size=3, stride=1, padding=1, bias=False)
         )
-        
-        # 8 x 8 x 64 -> 16 x 16 x 32
-        self.upsample3 = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='nearest'), 
-            spectral_norm(
-                nn.Conv2d(in_channels=initial_channels // 4,
-                        out_channels=initial_channels // 8,
-                        kernel_size=3,
-                        stride=1,
-                        padding=1,
-                        bias=False
-                ), 
-            ), 
-            ConditionalBatchNorm(
-                num_features=initial_channels // 8,
-                n_classes=n_classes,
-                embedding_dim=embedding_dim
-            ),
-            nn.ReLU(inplace=True)
+        self.cbn2 = ConditionalBatchNorm(
+            num_features=initial_channels // 4, n_classes=n_classes, embedding_dim=embedding_dim
         )
-        
-        # 16 x 16 x 32 -> 32 x 32 x 16
-        self.upsample4 = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='nearest'), 
-            spectral_norm(
-                nn.Conv2d(in_channels=initial_channels // 8,
-                        out_channels=initial_channels // 16,
-                        kernel_size=3,
-                        stride=1,
-                        padding=1,
-                        bias=False
-                ), 
-            ), 
-            ConditionalBatchNorm(
-                num_features=initial_channels // 16,
-                n_classes=n_classes,
-                embedding_dim=embedding_dim
-            ),
-            nn.ReLU(inplace=True)
+        self.relu2 = nn.ReLU(inplace=True)
+
+        # Upsample block 3: 16x16 -> 32x32
+        self.up3 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv3 = spectral_norm(
+            nn.Conv2d(in_channels=initial_channels // 4,
+                      out_channels=initial_channels // 8, # 32
+                      kernel_size=3, stride=1, padding=1, bias=False)
         )
-        # 32 x 32 x 16 -> 32 x 32 x 3
-        
-        self.final = nn.Sequential(
-            nn.Conv2d(in_channels=initial_channels // 16,
-                    out_channels=3,
-                    kernel_size=3,
-                    stride=1,
-                    padding=1,
-                    bias=False
-            ),
-            nn.Tanh()
+        self.cbn3 = ConditionalBatchNorm(
+            num_features=initial_channels // 8, n_classes=n_classes, embedding_dim=embedding_dim
         )
-        
-        self._initialize_weights()
-        
+        self.relu3 = nn.ReLU(inplace=True)
+
+        # Removed upsample4 as we are starting from 4x4 and doing 3 upsamples to get to 32x32
+        # self.upsample4 = ...
+
+        # Final layer: 32x32 -> 32x32 (adjust channels to 3)
+        self.final_conv = nn.Conv2d(in_channels=initial_channels // 8, # 32
+                                out_channels=3,
+                                kernel_size=3, stride=1, padding=1, bias=False)
+        self.final_act = nn.Tanh()
+
+        self._initialize_weights() # Keep your weight initialization
+
     def _initialize_weights(self):
         for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
-                if hasattr(self, 'final') and isinstance(self.final, nn.Sequential) and m is self.final[0]:
-                    nn.init.normal_(m.weight, 0.0, 0.02)
-                else:
-                    nn.init.kaiming_normal_(m.weight, a=0.2, mode='fan_in', nonlinearity='leaky_relu')
-                
+            if isinstance(m, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)): # Added ConvTranspose2d just in case
+                 # Use a common GAN initialization like normal or orthogonal
+                 # Kaiming might also work but normal is often used in GANs
+                nn.init.normal_(m.weight, 0.0, 0.02)
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)  
-        
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.BatchNorm2d, ConditionalBatchNorm)):
+                 # Initialize BatchNorm parameters
+                 if hasattr(m, 'weight') and m.weight is not None:
+                     nn.init.normal_(m.weight, 1.0, 0.02)
+                 if hasattr(m, 'bias') and m.bias is not None:
+                     nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Embedding):
+                 nn.init.normal_(m.weight, 0.0, 0.02) # Initialize embeddings
+
+
     def forward(self, z, y):
+        # Embed class label
         y_emb = self.class_emb(y)
-        
+
+        # Concatenate noise and embedding
         z_y = torch.cat([z, y_emb], dim=1)
-        
-        x = self.initial(z_y)
-        
-        x = self.upsample1(x, y)
-        x = self.upsample2(x, y)
-        x = self.upsample3(x, y)
-        x = self.upsample4(x, y)
-        x = self.final(x)
-        
+
+        # Initial projection and reshape
+        x = self.initial_fc(z_y)
+        x = self.initial_relu(x) # Apply activation *after* FC
+        x = self.initial_reshape(x)
+
+
+        # Upsample block 1
+        x = self.up1(x)
+        x = self.conv1(x)
+        x = self.cbn1(x, y) 
+        x = self.relu1(x)
+
+        # Upsample block 2
+        x = self.up2(x)
+        x = self.conv2(x)
+        x = self.cbn2(x, y) 
+        x = self.relu2(x)
+
+        # Upsample block 3
+        x = self.up3(x)
+        x = self.conv3(x)
+        x = self.cbn3(x, y) 
+        x = self.relu3(x)
+
+        x = self.final_conv(x)
+        x = self.final_act(x)
+
         return x
