@@ -6,76 +6,39 @@ class Discriminator(nn.Module):
     def __init__(self, n_classes=43, embedding_dim = 64):
         super().__init__()
 
+        # Original channels: 3 -> 16 -> 32 -> 64 -> 128 -> embedding_dim
+        # NEW Try: Reduce final channel depth
+        # Example: 3 -> 16 -> 32 -> 64 -> 64 -> embedding_dim
+
+        ch1, ch2, ch3, ch4 = 16, 32, 64, 64 # Reduced ch4 from 128
+
         self.image_features = nn.Sequential(
-                    spectral_norm(
-                        nn.Conv2d(in_channels=3,
-                                out_channels=16,
-                                kernel_size=4,
-                                stride=2, # for aggressive downsampling - and a better alternative to max pooling here
-                                padding=1, # for getting edge/border info - also keeps downsampling math simple halving here
-                                bias=False  #
-                        ), # 32 -> 16
-                    ),
-                    # nn.BatchNorm2d(num_features=16),
-                    nn.LeakyReLU(negative_slope=0.2,
-                                    inplace=True),
-
-                    spectral_norm(
-                        nn.Conv2d(in_channels=16,
-                                out_channels=32,
-                                kernel_size=4,
-                                stride=2,
-                                padding=1,
-                                bias=False
-                        ), # 16 -> 8 == 8x8x32
-                    ),
-                    # nn.BatchNorm2d(num_features=32),
-                    nn.LeakyReLU(negative_slope=0.2,
-                                    inplace=True),
-
-                    spectral_norm(
-                        nn.Conv2d(in_channels=32,
-                                out_channels=64,
-                                kernel_size=4,
-                                stride=2,
-                                padding=1,
-                                bias=False
-                        ), # 8 -> 4 == 4x4x64  
-                    ),
-                    # nn.BatchNorm2d(num_features=64), 
-                    nn.LeakyReLU(negative_slope=0.2,
-                                    inplace=True),
-
-                    spectral_norm(
-                        nn.Conv2d(in_channels=64,
-                                out_channels=128,
-                                kernel_size=4, 
-                                stride=1,      
-                                padding=0     
-                        ), # 4 -> 1 == 1 x 1 x 128 
-                    ),
-                    
-                    nn.LeakyReLU(negative_slope=0.2,
-                                    inplace=True),
-                    nn.Flatten(),
-
-                    # The input size to this linear layer depends on the output of the last conv layer.
-                    # Input: B x 3 x 32 x 32
-                    # Conv1 (k=4, s=2, p=1): B x 16 x 16 x 16
-                    # Conv2 (k=4, s=2, p=1): B x 32 x 8 x 8
-                    # Conv3 (k=4, s=2, p=1): B x 64 x 4 x 4
-                    # Conv4 (k=4, s=1, p=0): B x 128 x 1 x 1
-                    # Flatten: B x 128
-                    spectral_norm(nn.Linear(128, embedding_dim)) 
+            spectral_norm(
+                nn.Conv2d(3, ch1, 4, 2, 1, bias=False), # 32 -> 16
+            ),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(
+                nn.Conv2d(ch1, ch2, 4, 2, 1, bias=False), # 16 -> 8
+            ),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(
+                nn.Conv2d(ch2, ch3, 4, 2, 1, bias=False), # 8 -> 4
+            ),
+            nn.LeakyReLU(0.2, inplace=True),
+            spectral_norm(
+                # Last Conv layer uses ch4
+                nn.Conv2d(ch3, ch4, 4, 1, 0, bias=False), # 4 -> 1
+            ),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Flatten(),
+            # Linear layer input dim must now match ch4
+            spectral_norm(nn.Linear(ch4, embedding_dim))
         )
 
         self.class_emb = spectral_norm(
-                            nn.Embedding(
-                                num_embeddings = n_classes,
-                                embedding_dim = embedding_dim
-                            )
-                        )
-
+            nn.Embedding(n_classes, embedding_dim)
+        )
+        # This linear layer input also matches embedding_dim, so it's okay
         self.unconditioned = spectral_norm(nn.Linear(embedding_dim, 1))
 
         # self.sigmoid = nn.Sigmoid()  # NOTE: this or linear instead of this sigmoid with BCEWithLogitsLoss as it is more numerically stable
@@ -155,12 +118,15 @@ class Generator(nn.Module):
         initial_dim = 4 
         initial_channels = 256
 
+        ## INITIAL LAYER
+        # 4 x 4 x 256
         self.initial_fc = spectral_norm(nn.Linear(noise_dim + embedding_dim, initial_dim * initial_dim * initial_channels))
         self.initial_reshape = nn.Unflatten(dim=1, unflattened_size=(initial_channels, initial_dim, initial_dim))
-       
         self.initial_relu = nn.ReLU(inplace=True)
 
-        self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
+        ## UPSAMPLE 1 
+        # 4 x 4 x 256 -> 8 x 8 x 128
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear')
         self.conv1 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels,
                       out_channels=initial_channels // 2, # 128
@@ -172,7 +138,7 @@ class Generator(nn.Module):
         self.relu1 = nn.ReLU(inplace=True)
 
 
-        self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear')
         self.conv2 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels // 2,
                       out_channels=initial_channels // 4, # 64
@@ -184,7 +150,7 @@ class Generator(nn.Module):
         self.relu2 = nn.ReLU(inplace=True)
 
 
-        self.up3 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.up3 = nn.Upsample(scale_factor=2, mode='bilinear')
         self.conv3 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels // 4,
                       out_channels=initial_channels // 8, # 32
