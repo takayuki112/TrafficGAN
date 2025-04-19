@@ -126,7 +126,7 @@ class Generator(nn.Module):
 
         ch1_out = initial_channels // 2 # 128
         ch2_out = initial_channels // 4 # 64
-        ch3_out = initial_channels // 4 # 64 - Keeping last layer wider
+        ch3_out = initial_channels // 8 # 32 
 
         ## UPSAMPLE 1
         # 4 x 4 x 256 -> 8 x 8 x 128
