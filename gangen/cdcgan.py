@@ -115,7 +115,7 @@ class Generator(nn.Module):
 
         self.class_emb = nn.Embedding(num_embeddings=n_classes, embedding_dim=embedding_dim)
 
-        initial_dim = 4 
+        initial_dim = 4
         initial_channels = 256
 
         ## INITIAL LAYER
@@ -124,51 +124,62 @@ class Generator(nn.Module):
         self.initial_reshape = nn.Unflatten(dim=1, unflattened_size=(initial_channels, initial_dim, initial_dim))
         self.initial_relu = nn.ReLU(inplace=True)
 
-        ## UPSAMPLE 1 
+        ch1_out = initial_channels // 2 # 128
+        ch2_out = initial_channels // 4 # 64
+        ch3_out = initial_channels // 4 # 64 - Keeping last layer wider
+
+        ## UPSAMPLE 1
         # 4 x 4 x 256 -> 8 x 8 x 128
-        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear')
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.conv1 = spectral_norm(
             nn.Conv2d(in_channels=initial_channels,
-                      out_channels=initial_channels // 2, # 128
+                      out_channels=ch1_out, # 128
                       kernel_size=3, stride=1, padding=1, bias=False)
         )
         self.cbn1 = ConditionalBatchNorm(
-            num_features=initial_channels // 2, n_classes=n_classes, embedding_dim=embedding_dim
+            num_features=ch1_out, n_classes=n_classes, embedding_dim=embedding_dim
         )
         self.relu1 = nn.ReLU(inplace=True)
 
-
-        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear')
+        ## UPSAMPLE 2
+        # 8 x 8 x 128 -> 16 x 16 x 64
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.conv2 = spectral_norm(
-            nn.Conv2d(in_channels=initial_channels // 2,
-                      out_channels=initial_channels // 4, # 64
+            nn.Conv2d(in_channels=ch1_out,
+                      out_channels=ch2_out, # 64
                       kernel_size=3, stride=1, padding=1, bias=False)
         )
         self.cbn2 = ConditionalBatchNorm(
-            num_features=initial_channels // 4, n_classes=n_classes, embedding_dim=embedding_dim
+            num_features=ch2_out, n_classes=n_classes, embedding_dim=embedding_dim
         )
         self.relu2 = nn.ReLU(inplace=True)
 
-
-        self.up3 = nn.Upsample(scale_factor=2, mode='bilinear')
+        ## UPSAMPLE 3
+        # 16 x 16 x 64 -> 32 x 32 x 64
+        self.up3 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.conv3 = spectral_norm(
-            nn.Conv2d(in_channels=initial_channels // 4,
-                      out_channels=initial_channels // 8, # 32
+            nn.Conv2d(in_channels=ch2_out,  # 64
+                      out_channels=ch3_out, # 64 (Correctly set)
                       kernel_size=3, stride=1, padding=1, bias=False)
         )
+        # --- FIX HERE ---
         self.cbn3 = ConditionalBatchNorm(
-            num_features=initial_channels // 8, n_classes=n_classes, embedding_dim=embedding_dim
+            num_features=ch3_out, # << Use ch3_out (64)
+            n_classes=n_classes, embedding_dim=embedding_dim
         )
         self.relu3 = nn.ReLU(inplace=True)
 
-
-        self.final_conv = nn.Conv2d(in_channels=initial_channels // 8, # 32
-                                out_channels=3,
-                                kernel_size=3, stride=1, padding=1, bias=False)
+        ## FINAL LAYER
+        # 32 x 32 x 64 -> 32 x 32 x 3
+        # --- FIX HERE ---
+        self.final_conv = nn.Conv2d(
+            in_channels=ch3_out, # << Use ch3_out (64)
+            out_channels=3,
+            kernel_size=3, stride=1, padding=1, bias=False)
         self.final_act = nn.Tanh()
 
 
-        self._initialize_weights() 
+        self._initialize_weights()
         
         
     def _initialize_weights(self):
