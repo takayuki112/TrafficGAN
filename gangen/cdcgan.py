@@ -10,7 +10,7 @@ class Discriminator(nn.Module):
         # NEW Try: Reduce final channel depth
         # Example: 3 -> 16 -> 32 -> 64 -> 64 -> embedding_dim
 
-        ch1, ch2, ch3, ch4 = 16, 32, 64, 128 # Reduced ch4 from 128
+        ch1, ch2, ch3, ch4 = 16, 64, 64, 128 # Reduced ch4 from 128
 
         self.image_features = nn.Sequential(
             spectral_norm(
